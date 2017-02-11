@@ -3,7 +3,8 @@
 :mod:`boardgamegeek.api` - Core functions
 =========================================
 
-This module contains the core functionality needed to retrieve data from boardgamegeek.com and parse it into usable
+This module contains the core functionality needed to retrieve data 
+from boardgamegeek.com and parse it into usable
 objects.
 
 .. module:: boardgamegeek.api
@@ -710,6 +711,156 @@ class BoardGameGeek(BoardGameGeekNetworkAPI):
         """
         return self._get_game_id(name, game_type="boardgame", choose=choose)
 
+    def _parse_game_xml(self, game_id, game_root):
+        """
+        Parse the information returned from the BGG game call 
+        create a BoardGame Object Based upon the returned data
+
+        :param game_id: id for the game that is being parsed
+        :param game_root: xml root for a single game item
+        :return: ``BoardGame`` object
+        :rtype: :py:class:`boardgamegeek.games.BoardGame`
+        """
+
+        game_type = game_root.attrib["type"]
+        if game_type not in ["boardgame", "boardgameexpansion"]:
+            log.debug("item id {} is not a boardgame (type: {})".format(game_id, game_type))
+            raise BoardGameGeekError("item is not a board game")
+
+        kwargs = {"id": game_id,
+                  "thumbnail": xml_subelement_text(game_root, "thumbnail"),
+                  "image": xml_subelement_text(game_root, "image"),
+                  "expansion": game_type == "boardgameexpansion",       # is this game an expansion?
+                  "families": xml_subelement_attr_list(game_root, ".//link[@type='boardgamefamily']"),
+                  "categories": xml_subelement_attr_list(game_root, ".//link[@type='boardgamecategory']"),
+                  "implementations": xml_subelement_attr_list(game_root, ".//link[@type='boardgameimplementation']"),
+                  "mechanics": xml_subelement_attr_list(game_root, ".//link[@type='boardgamemechanic']"),
+                  "designers": xml_subelement_attr_list(game_root, ".//link[@type='boardgamedesigner']"),
+                  "artists": xml_subelement_attr_list(game_root, ".//link[@type='boardgameartist']"),
+                  "publishers": xml_subelement_attr_list(game_root, ".//link[@type='boardgamepublisher']")}
+
+        expands = []        # list of items this game expands
+        expansions = []     # list of expansions this game has
+        for e in game_root.findall(".//link[@type='boardgameexpansion']"):
+            item = {"id": e.attrib["id"],
+                    "name": e.attrib["value"]}
+
+            if e.attrib.get("inbound", "false").lower()[0] == 't':
+                # this is an item expanded by game_id
+                expands.append(item)
+            else:
+                expansions.append(item)
+
+        kwargs["expansions"] = expansions
+        kwargs["expands"] = expands
+        kwargs["description"] = xml_subelement_text(game_root, "description", convert=html_parser.unescape, quiet=True)
+
+        # These XML elements have a numberic value, attempt to convert them to integers
+        for i in ["yearpublished", "minplayers", "maxplayers", "playingtime", "minage"]:
+            kwargs[i] = xml_subelement_attr(game_root, i, convert=int, quiet=True)
+
+        # What's the name of the game :P
+        kwargs["name"] = xml_subelement_attr(game_root, ".//name[@type='primary']")
+
+        # Get alternative names too
+        kwargs["alternative_names"] = xml_subelement_attr_list(game_root, ".//name[@type='alternate']")
+
+        # look for statistics info
+        stats = game_root.find(".//ratings")
+        kwargs.update({
+            "usersrated": xml_subelement_attr(stats, "usersrated", convert=int, quiet=True),
+            "average": xml_subelement_attr(stats, "average", convert=float, quiet=True),
+            "bayesaverage": xml_subelement_attr(stats, "bayesaverage", convert=float, quiet=True),
+            "stddev": xml_subelement_attr(stats, "stddev", convert=float, quiet=True),
+            "median": xml_subelement_attr(stats, "median", convert=float, quiet=True),
+            "owned": xml_subelement_attr(stats, "owned", convert=int, quiet=True),
+            "trading": xml_subelement_attr(stats, "trading", convert=int, quiet=True),
+            "wanting": xml_subelement_attr(stats, "wanting", convert=int, quiet=True),
+            "wishing": xml_subelement_attr(stats, "wishing", convert=int, quiet=True),
+            "numcomments": xml_subelement_attr(stats, "numcomments", convert=int, quiet=True),
+            "numweights": xml_subelement_attr(stats, "numweights", convert=int, quiet=True),
+            "averageweight": xml_subelement_attr(stats, "averageweight", convert=float, quiet=True)
+        })
+
+        kwargs["ranks"] = []
+        ranks = game_root.findall(".//rank")
+        for rank in ranks:
+            try:
+                rank_value = int(rank.attrib.get("value"))
+            except:
+                rank_value = None
+            kwargs["ranks"].append({"name": rank.attrib.get("name"),
+                                    "friendlyname": rank.attrib.get("friendlyname"),
+                                    "value": rank_value})
+
+        ''' UPDATED Poll '''
+        polls = game_root.findall(".//poll")
+        kwargs["suggested_players"] = {}
+        for poll in polls:
+            if poll.attrib.get("name") == "suggested_numplayers":
+                results = poll.findall('.//results')
+                kwargs["suggested_players"]['total_votes'] = poll.attrib.get('totalvotes')
+                kwargs["suggested_players"]['results'] = {}
+                for result in results:
+                    player_count = result.attrib.get("numplayers")
+                    if result.find(".//result[@value='Best']") is not None:
+                        kwargs["suggested_players"]['results'][player_count] = {
+                            'best_rating': result.find(".//result[@value='Best']").attrib.get("numvotes"),
+                            'recommended_rating': result.find(".//result[@value='Recommended']").attrib.get("numvotes"),
+                            'not_recommeded_rating': result.find(".//result[@value='Not Recommended']").attrib.get("numvotes"),
+                        }
+                    else:
+                        kwargs["suggested_players"]['results'][player_count] = {
+                            'best_rating': '1',
+                            'recommended_rating': '0',
+                            'not_recommeded_rating': '0',
+                        }
+
+        return BoardGame(kwargs)
+
+    def games_by_ids(self, game_id_list=[]):
+        """
+        Get information about multiple games based on a list of ids.
+
+        :param list game_id_list:  If not empty, get information about multiple games based on ids
+        :return: list of ``BoardGame`` objects
+        :rtype: list
+        :return: ``None`` if the games were not found
+
+        :raises: :py:exc:`boardgamegeek.exceptions.BoardGameGeekError` in case of invalid name or game_id
+        :raises: :py:exc:`boardgamegeek.exceptions.BoardGameGeekAPIRetryError` if this request should be retried after a short delay
+        :raises: :py:exc:`boardgamegeek.exceptions.BoardGameGeekAPIError` if the response couldn't be parsed
+        :raises: :py:exc:`boardgamegeek.exceptions.BoardGameGeekTimeoutError` if there was a timeout
+        """
+        if len(game_id_list) == 0:
+            raise BoardGameGeekError("game ids are not specified")
+
+        if len(game_id_list) > 0:
+            game_id = ','.join(game_id_list)
+
+        try:
+            root = get_parsed_xml_response(self.requests_session,
+                                           self._thing_api_url,
+                                           params={"id": game_id, "stats": 1},
+                                           timeout=self._timeout,
+                                           retries=self._retries,
+                                           retry_delay=self._retry_delay)
+        except BoardGameGeekAPINonXMLError:
+            return None
+
+        # xml is structured like <item ...> blablabla><item>..
+        roots = root.findall("item")
+        if roots is None:
+            msg = "error parsing game data for game ids: {}".format(game_id)
+            raise BoardGameGeekAPIError(msg)
+
+        games = []
+        for k, root in enumerate(roots):
+            games.append(self._parse_game_xml(game_id_list[k], root))
+
+        return games
+
+
     def game(self, name=None, game_id=None, choose="first"):
         """
         Get information about a game.
@@ -750,83 +901,7 @@ class BoardGameGeek(BoardGameGeekNetworkAPI):
 
         # xml is structured like <item ...> blablabla><item>..
         root = root.find("item")
-        if root is None:
-            msg = "error parsing game data for game id: {}{}".format(game_id,
-                                                                      " ({})".format(name) if name is not None else "")
-            raise BoardGameGeekAPIError(msg)
-
-        game_type = root.attrib["type"]
-        if game_type not in ["boardgame", "boardgameexpansion"]:
-            log.debug("item id {} is not a boardgame (type: {})".format(game_id, game_type))
-            raise BoardGameGeekError("item is not a board game")
-
-        kwargs = {"id": game_id,
-                  "thumbnail": xml_subelement_text(root, "thumbnail"),
-                  "image": xml_subelement_text(root, "image"),
-                  "expansion": game_type == "boardgameexpansion",       # is this game an expansion?
-                  "families": xml_subelement_attr_list(root, ".//link[@type='boardgamefamily']"),
-                  "categories": xml_subelement_attr_list(root, ".//link[@type='boardgamecategory']"),
-                  "implementations": xml_subelement_attr_list(root, ".//link[@type='boardgameimplementation']"),
-                  "mechanics": xml_subelement_attr_list(root, ".//link[@type='boardgamemechanic']"),
-                  "designers": xml_subelement_attr_list(root, ".//link[@type='boardgamedesigner']"),
-                  "artists": xml_subelement_attr_list(root, ".//link[@type='boardgameartist']"),
-                  "publishers": xml_subelement_attr_list(root, ".//link[@type='boardgamepublisher']")}
-
-        expands = []        # list of items this game expands
-        expansions = []     # list of expansions this game has
-        for e in root.findall(".//link[@type='boardgameexpansion']"):
-            item = {"id": e.attrib["id"],
-                    "name": e.attrib["value"]}
-
-            if e.attrib.get("inbound", "false").lower()[0] == 't':
-                # this is an item expanded by game_id
-                expands.append(item)
-            else:
-                expansions.append(item)
-
-        kwargs["expansions"] = expansions
-        kwargs["expands"] = expands
-        kwargs["description"] = xml_subelement_text(root, "description", convert=html_parser.unescape, quiet=True)
-
-        # These XML elements have a numberic value, attempt to convert them to integers
-        for i in ["yearpublished", "minplayers", "maxplayers", "playingtime", "minage"]:
-            kwargs[i] = xml_subelement_attr(root, i, convert=int, quiet=True)
-
-        # What's the name of the game :P
-        kwargs["name"] = xml_subelement_attr(root, ".//name[@type='primary']")
-
-        # Get alternative names too
-        kwargs["alternative_names"] = xml_subelement_attr_list(root, ".//name[@type='alternate']")
-
-        # look for statistics info
-        stats = root.find(".//ratings")
-        kwargs.update({
-            "usersrated": xml_subelement_attr(stats, "usersrated", convert=int, quiet=True),
-            "average": xml_subelement_attr(stats, "average", convert=float, quiet=True),
-            "bayesaverage": xml_subelement_attr(stats, "bayesaverage", convert=float, quiet=True),
-            "stddev": xml_subelement_attr(stats, "stddev", convert=float, quiet=True),
-            "median": xml_subelement_attr(stats, "median", convert=float, quiet=True),
-            "owned": xml_subelement_attr(stats, "owned", convert=int, quiet=True),
-            "trading": xml_subelement_attr(stats, "trading", convert=int, quiet=True),
-            "wanting": xml_subelement_attr(stats, "wanting", convert=int, quiet=True),
-            "wishing": xml_subelement_attr(stats, "wishing", convert=int, quiet=True),
-            "numcomments": xml_subelement_attr(stats, "numcomments", convert=int, quiet=True),
-            "numweights": xml_subelement_attr(stats, "numweights", convert=int, quiet=True),
-            "averageweight": xml_subelement_attr(stats, "averageweight", convert=float, quiet=True)
-        })
-
-        kwargs["ranks"] = []
-        ranks = root.findall(".//rank")
-        for rank in ranks:
-            try:
-                rank_value = int(rank.attrib.get("value"))
-            except:
-                rank_value = None
-            kwargs["ranks"].append({"name": rank.attrib.get("name"),
-                                    "friendlyname": rank.attrib.get("friendlyname"),
-                                    "value": rank_value})
-
-        return BoardGame(kwargs)
+        return self._parse_game_xml(game_id, root)
 
     def games(self, name):
         """

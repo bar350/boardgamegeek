@@ -25,10 +25,10 @@ class Thing(DictObject):
             if i not in data:
                 raise BoardGameGeekError("missing '{}' when trying to create a Thing".format(i))
 
-        try:
-            data["id"] = int(data["id"])
-        except:
-            raise BoardGameGeekError("id ({}) is not an int when trying to create a Thing".format(data["id"]))
+        # try:
+        #     data["id"] = int(data["id"])
+        # except:
+        #     raise BoardGameGeekError("id ({}) is not an int when trying to create a Thing".format(data["id"]))
 
         super(Thing, self).__init__(data)
 

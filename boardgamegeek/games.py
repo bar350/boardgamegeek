@@ -20,7 +20,8 @@ from .utils import fix_url
 
 class CollectionBoardGame(Thing):
     """
-    A boardgame retrieved from the collection information, which has less information than the one retrieved
+    A boardgame retrieved from the collection information,
+    which has less information than the one retrieved
     via the /thing api and which also contains some user-specific information.
     """
     def __repr__(self):
@@ -166,7 +167,7 @@ class BoardGame(Thing):
 
         self._expands = []              # list of Thing which this item expands
         self._expands_set = set()       # set for keeping things unique
-        for data in kw["expands"]:         # for all the items this game expands, create a Thing
+        for data in kw["expands"]:  # for all the items this game expands, create a Thing
             try:
                 if data["id"] not in self._expands_set:
                     self._expands_set.add(data["id"])
@@ -186,6 +187,17 @@ class BoardGame(Thing):
                     else:
                         self.boardgame_rank = int(value)
                     break
+
+        ''' ADDED CODE NEED TO PATCH '''
+        self._player_suggestion = []
+        if "suggested_players" in kw:
+            for count, result in kw['suggested_players']['results'].items():
+                self._player_suggestion.append({
+                    'player_count': count,
+                    'best': int(result['best_rating']),
+                    'recommended': int(result['recommended_rating']),
+                    'not_recommended': int(result['not_recommeded_rating']),
+                })
 
         super(BoardGame, self).__init__(kw)
 
@@ -571,3 +583,8 @@ class BoardGame(Thing):
         :return: ``None`` if n/a
         """
         return self._data.get("ranks")
+
+    @property
+    def player_suggestion(self):
+        return self._player_suggestion
+
