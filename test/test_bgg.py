@@ -380,6 +380,9 @@ def test_get_known_game_info_by_id(bgg):
     game = bgg.game(None, game_id=TEST_GAME_ID)
     check_game(game)
 
+def test_get_known_game_info_by_id_list(bgg):
+    game = bgg.games_by_ids(None, game_id_list=[TEST_GAME_ID])
+    check_game(game[0])
 
 def test_get_game_id_by_name(bgg):
     game_id = bgg.get_game_id(TEST_GAME_NAME)
